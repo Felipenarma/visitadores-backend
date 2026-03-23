@@ -97,10 +97,9 @@ def delete_visit(visit_id: int, db: Session = Depends(get_db)):
 def generate_visits(data: GenerateVisitsRequest, db: Session = Depends(get_db)):
     """
     Generate visits distributed across weekdays.
-    - Each doctor gets visited once per frequency cycle
-    - Max 7 visits per day per rep (Mon-Fri only)
-    - Each doctor only appears ONCE per day
-    - Visits are spread evenly across the period
+    - All doctors are spread evenly across weekdays (7 per day, Mon-Fri)
+    - Each cycle covers all doctors, then repeats based on frequency
+    - No doctor appears twice on the same day
     """
     months_ahead = data.months_ahead or 6
     MAX_PER_DAY = 7
@@ -137,54 +136,61 @@ def generate_visits(data: GenerateVisitsRequest, db: Session = Depends(get_db)):
         if not weekdays:
             continue
 
-        # Track how many visits per day and per doctor-per-day
-        day_counts = defaultdict(int)       # date -> count
-        doc_on_day = defaultdict(set)       # date -> set of doctor_ids
-
-        # For each doctor, schedule visits every N days, spread across weekdays
-        # Sort by frequency (most frequent first to ensure they get slots)
-        sorted_docs = sorted(rep_docs, key=lambda x: (x.visit_frequency or 30))
-
-        for doc in sorted_docs:
+        # Group doctors by frequency
+        freq_groups = defaultdict(list)
+        for doc in rep_docs:
             freq = doc.visit_frequency if doc.visit_frequency and doc.visit_frequency > 0 else 30
+            freq_groups[freq].append(doc)
 
-            # Find all dates this doctor needs a visit
-            next_visit = start_date
-            while next_visit <= end_date:
-                # Find the nearest weekday with available slots
-                # that doesn't already have this doctor
-                best_day = None
-                for offset in range(0, 7):  # Look up to 7 days ahead
-                    candidate = next_visit + timedelta(days=offset)
-                    if candidate > end_date:
-                        break
-                    if candidate.weekday() >= 5:  # Skip weekends
-                        continue
-                    candidate_date = candidate.replace(hour=0, minute=0, second=0, microsecond=0)
-                    if day_counts[candidate_date] < MAX_PER_DAY and doc.id not in doc_on_day[candidate_date]:
-                        best_day = candidate_date
-                        break
+        day_counts = defaultdict(int)  # date -> count of visits
+        doc_on_day = defaultdict(set)  # date -> set of doctor_ids
 
-                if best_day:
-                    slot_num = day_counts[best_day]
-                    hour = 8 + slot_num  # 8:00, 9:00, 10:00...
-                    visit_time = best_day.replace(hour=hour)
+        for freq, docs_in_group in freq_groups.items():
+            # Calculate how many cycles fit in the period
+            total_days = (end_date - start_date).days
+            num_cycles = max(1, total_days // freq)
 
-                    visit = Visit(
-                        doctor_id=doc.id,
-                        rep_id=rep_id,
-                        scheduled_date=visit_time,
-                        status="scheduled"
-                    )
-                    db.add(visit)
-                    day_counts[best_day] += 1
-                    doc_on_day[best_day].add(doc.id)
-                    total_created += 1
+            for cycle in range(num_cycles):
+                # Start date of this cycle
+                cycle_start_day = start_date + timedelta(days=cycle * freq)
+                if cycle_start_day > end_date:
+                    break
 
-                next_visit += timedelta(days=freq)
+                # Get weekdays available from cycle_start
+                cycle_weekdays = [wd for wd in weekdays if wd >= cycle_start_day.replace(hour=0, minute=0, second=0, microsecond=0)]
+
+                # Distribute all doctors in this group across available weekdays
+                doc_idx = 0
+                for wd in cycle_weekdays:
+                    if doc_idx >= len(docs_in_group):
+                        break  # All doctors in this cycle scheduled
+
+                    while doc_idx < len(docs_in_group) and day_counts[wd] < MAX_PER_DAY:
+                        doc = docs_in_group[doc_idx]
+
+                        # Skip if this doctor already has a visit on this day
+                        if doc.id in doc_on_day[wd]:
+                            doc_idx += 1
+                            continue
+
+                        slot_num = day_counts[wd]
+                        hour = 8 + slot_num  # 8:00, 9:00, 10:00...
+                        visit_time = wd.replace(hour=hour)
+
+                        visit = Visit(
+                            doctor_id=doc.id,
+                            rep_id=rep_id,
+                            scheduled_date=visit_time,
+                            status="scheduled"
+                        )
+                        db.add(visit)
+                        day_counts[wd] += 1
+                        doc_on_day[wd].add(doc.id)
+                        total_created += 1
+                        doc_idx += 1
 
     db.commit()
     return {
-        "message": f"Generación completada: {total_created} visitas creadas. Distribuidas máx {MAX_PER_DAY}/día (Lun-Vie), sin repetir doctor el mismo día.",
+        "message": f"Generación completada: {total_created} visitas creadas. Distribuidas máx {MAX_PER_DAY}/día (Lun-Vie).",
         "created": total_created,
     }
