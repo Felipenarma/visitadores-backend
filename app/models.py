@@ -105,3 +105,18 @@ class CardexUpload(Base):
     filename = Column(String(255), nullable=False)
     upload_date = Column(DateTime, server_default=func.now())
     rows_processed = Column(Integer, default=0)
+
+
+class KnowledgeBase(Base):
+    __tablename__ = "knowledge_base"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(200), nullable=False)
+    category = Column(String(100), nullable=False)  # productos, protocolos, faq, general
+    content = Column(Text, nullable=False)
+    business_line_id = Column(Integer, ForeignKey("business_lines.id"), nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    business_line = relationship("BusinessLine")

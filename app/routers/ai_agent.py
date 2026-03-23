@@ -8,7 +8,7 @@ import httpx
 from dotenv import load_dotenv
 load_dotenv()
 from ..database import get_db
-from ..models import Visit, Doctor, MedicalRep
+from ..models import Visit, Doctor, MedicalRep, KnowledgeBase
 from ..schemas import AgentChatRequest, AgentChatResponse, AgentMessage
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -275,7 +275,16 @@ def chat(request: AgentChatRequest, db: Session = Depends(get_db)):
 
         messages.append({"role": "user", "content": request.message})
 
-        system_with_context = f"{SYSTEM_PROMPT}\n\nContexto actual:\n- Visitador: {rep.name}\n- ID: {rep.id}\n- Fecha actual: {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}"
+        # Load knowledge base
+        kb_entries = db.query(KnowledgeBase).filter(KnowledgeBase.is_active == True).all()
+        kb_text = ""
+        if kb_entries:
+            kb_text = "\n\n--- BASE DE CONOCIMIENTO ---\nUsa esta información para responder preguntas sobre productos, protocolos y procedimientos:\n\n"
+            for entry in kb_entries:
+                bl_name = entry.business_line.name if entry.business_line else "General"
+                kb_text += f"[{entry.category.upper()} - {bl_name}] {entry.title}:\n{entry.content}\n\n"
+
+        system_with_context = f"{SYSTEM_PROMPT}\n\nContexto actual:\n- Visitador: {rep.name}\n- ID: {rep.id}\n- Fecha actual: {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}{kb_text}"
 
         # Tool-calling loop
         final_response = ""

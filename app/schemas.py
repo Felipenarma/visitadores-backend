@@ -193,3 +193,35 @@ class AgentChatRequest(BaseModel):
 class AgentChatResponse(BaseModel):
     response: str
     conversation_history: List[AgentMessage]
+
+
+# Knowledge Base schemas
+class KnowledgeBaseCreate(BaseModel):
+    title: str
+    category: str
+    content: str
+    business_line_id: Optional[int] = None
+    is_active: Optional[bool] = True
+
+
+class KnowledgeBaseUpdate(BaseModel):
+    title: Optional[str] = None
+    category: Optional[str] = None
+    content: Optional[str] = None
+    business_line_id: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class KnowledgeBaseOut(BaseModel):
+    id: int
+    title: str
+    category: str
+    content: str
+    business_line_id: Optional[int] = None
+    business_line_name: Optional[str] = None
+    is_active: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
