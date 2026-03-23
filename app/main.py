@@ -173,3 +173,18 @@ def seed_sample_data(db: Session = Depends(get_db)):
         "doctors_created": len([d for d in doctors if d.id]),
         "visits_created": visits_created
     }
+
+
+@app.post("/api/reset-all")
+def reset_all_data(db: Session = Depends(get_db)):
+    """Delete all data except business lines."""
+    from .models import Visit, Sale, SalesUpload, CardexUpload, Doctor, MedicalRep, KnowledgeBase
+    db.query(Visit).delete()
+    db.query(Sale).delete()
+    db.query(SalesUpload).delete()
+    db.query(CardexUpload).delete()
+    db.query(Doctor).delete()
+    db.query(MedicalRep).delete()
+    db.query(KnowledgeBase).delete()
+    db.commit()
+    return {"message": "Todos los datos han sido eliminados (excepto líneas de negocio)"}
