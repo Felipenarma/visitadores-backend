@@ -3,22 +3,131 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 import pandas as pd
 import io
+import re
 from ..database import get_db
 from ..models import Doctor, MedicalRep, BusinessLine, CardexUpload
 
 router = APIRouter(prefix="/api/cardex", tags=["cardex"])
 
-TEMPLATE_COLUMNS = [
-    "nombre_medico", "especialidad", "direccion", "telefono", "email",
-    "nombre_visitador", "linea_negocio", "frecuencia_visita_dias",
-    "productos_prescribe", "notas"
-]
+# Smart column mapping: maps many possible names to our internal names
+COLUMN_PATTERNS = {
+    "nombre_medico": [
+        r"nombre.*medico", r"nombre.*doctor", r"doctor", r"medico", r"nombre.*dr",
+        r"physician", r"name.*doctor", r"dr\.?", r"nombre.*completo", r"nombre",
+        r"medico.*nombre", r"doctor.*nombre", r"profesional",
+    ],
+    "especialidad": [
+        r"especialidad", r"specialty", r"especialización", r"especializacion",
+        r"area.*medica", r"rama", r"disciplina",
+    ],
+    "direccion": [
+        r"direcci[oó]n", r"domicilio", r"address", r"ubicaci[oó]n",
+        r"consultorio", r"calle", r"direcc",
+    ],
+    "telefono": [
+        r"tel[eé]fono", r"phone", r"celular", r"m[oó]vil", r"contacto.*tel",
+        r"n[uú]mero", r"tel\.?", r"fono",
+    ],
+    "email": [
+        r"e-?mail", r"correo", r"correo.*electr[oó]nico", r"mail",
+    ],
+    "nombre_visitador": [
+        r"visitador", r"representante", r"rep", r"vendedor", r"asesor",
+        r"ejecutivo", r"nombre.*rep", r"nombre.*visit", r"asignado",
+        r"promotor", r"agente",
+    ],
+    "linea_negocio": [
+        r"l[ií]nea", r"business.*line", r"categor[ií]a", r"divisi[oó]n",
+        r"unidad.*negocio", r"producto.*l[ií]nea", r"segmento", r"area",
+    ],
+    "frecuencia_visita_dias": [
+        r"frecuencia", r"frequency", r"d[ií]as", r"periodicidad",
+        r"cada.*d[ií]as", r"intervalo", r"ciclo",
+    ],
+    "productos_prescribe": [
+        r"producto", r"prescri", r"medicamento", r"f[aá]rmaco",
+        r"droga", r"receta", r"tratamiento", r"product",
+    ],
+    "notas": [
+        r"nota", r"observaci[oó]n", r"comentario", r"notes", r"obs",
+        r"detalle", r"informaci[oó]n.*adicional", r"remarks",
+    ],
+}
+
+
+def smart_map_columns(df_columns: list) -> dict:
+    """Map arbitrary column names to our expected columns using pattern matching."""
+    mapping = {}
+    used_cols = set()
+    normalized = {col: col.lower().strip().replace(" ", "_").replace(".", "") for col in df_columns}
+
+    # First pass: try to match each of our fields
+    for field, patterns in COLUMN_PATTERNS.items():
+        best_match = None
+        for col, norm in normalized.items():
+            if col in used_cols:
+                continue
+            for pattern in patterns:
+                if re.search(pattern, norm):
+                    best_match = col
+                    break
+            if best_match:
+                break
+        if best_match:
+            mapping[best_match] = field
+            used_cols.add(best_match)
+
+    return mapping
+
+
+def try_read_file(content: bytes, filename: str) -> pd.DataFrame:
+    """Try to read a file in multiple formats."""
+    fname = filename.lower()
+
+    # CSV
+    if fname.endswith('.csv'):
+        # Try different encodings and separators
+        for encoding in ['utf-8', 'latin-1', 'cp1252']:
+            for sep in [',', ';', '\t', '|']:
+                try:
+                    df = pd.read_csv(io.BytesIO(content), encoding=encoding, sep=sep)
+                    if len(df.columns) > 1:
+                        return df
+                except:
+                    continue
+        # Last resort
+        return pd.read_csv(io.BytesIO(content), encoding='latin-1')
+
+    # Excel
+    if fname.endswith(('.xlsx', '.xls')):
+        try:
+            xls = pd.ExcelFile(io.BytesIO(content))
+            # Read first sheet with data
+            for sheet in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet)
+                if not df.empty and len(df.columns) > 0:
+                    # Skip rows that look like headers/titles (first row all strings, second row has data)
+                    return df
+            return pd.read_excel(io.BytesIO(content))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error leyendo Excel: {str(e)}")
+
+    # TXT (try as CSV with different separators)
+    if fname.endswith('.txt'):
+        for sep in ['\t', ',', ';', '|']:
+            try:
+                df = pd.read_csv(io.BytesIO(content), sep=sep, encoding='utf-8')
+                if len(df.columns) > 1:
+                    return df
+            except:
+                continue
+        return pd.read_csv(io.BytesIO(content), sep='\t', encoding='latin-1')
+
+    raise HTTPException(status_code=400, detail="Formato no soportado. Use CSV, Excel (.xlsx/.xls) o TXT.")
 
 
 @router.get("/template")
 def download_template():
-    df = pd.DataFrame(columns=TEMPLATE_COLUMNS)
-    # Add example row
     example = {
         "nombre_medico": "Dr. Juan Pérez",
         "especialidad": "Dermatología",
@@ -48,29 +157,54 @@ async def upload_cardex(file: UploadFile = File(...), db: Session = Depends(get_
         raise HTTPException(status_code=400, detail="No se proporcionó archivo")
 
     content = await file.read()
+
     try:
-        if file.filename.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(content))
-        elif file.filename.endswith((".xlsx", ".xls")):
-            df = pd.read_excel(io.BytesIO(content))
-        else:
-            raise HTTPException(status_code=400, detail="Formato no soportado. Use CSV o Excel.")
+        df = try_read_file(content, file.filename)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error al leer archivo: {str(e)}")
 
-    # Normalize column names
-    df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
+    if df.empty:
+        raise HTTPException(status_code=400, detail="El archivo está vacío")
 
-    # Check required columns
-    required = ["nombre_medico"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
+    # Smart column mapping
+    col_mapping = smart_map_columns(list(df.columns))
+
+    # Rename columns based on mapping
+    if col_mapping:
+        df = df.rename(columns=col_mapping)
+    else:
+        # Fallback: normalize column names directly
+        df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
+
+    # Check if we found at least a name column - try harder if not
+    if "nombre_medico" not in df.columns:
+        # If there's a column called just "nombre" or the first string column, use it
+        for col in df.columns:
+            col_lower = str(col).lower().strip()
+            if "nombre" in col_lower or "name" in col_lower or "doctor" in col_lower:
+                df = df.rename(columns={col: "nombre_medico"})
+                break
+
+    # Still no match? Use the first column that has text data
+    if "nombre_medico" not in df.columns:
+        for col in df.columns:
+            if df[col].dtype == object:  # string column
+                sample = df[col].dropna().head(5).tolist()
+                if any(isinstance(v, str) and len(v) > 2 for v in sample):
+                    df = df.rename(columns={col: "nombre_medico"})
+                    break
+
+    if "nombre_medico" not in df.columns:
+        # Return helpful error with the columns found
+        found_cols = list(df.columns)[:15]
         raise HTTPException(
             status_code=400,
-            detail=f"Columnas faltantes: {', '.join(missing)}"
+            detail=f"No se pudo identificar la columna de nombres de médicos. Columnas encontradas: {', '.join(str(c) for c in found_cols)}. Asegúrate de que al menos una columna contenga nombres de médicos."
         )
 
-    upload = CardexUpload(filename=file.filename, rows_processed=len(df))
+    upload = CardexUpload(filename=file.filename, rows_processed=0)
     db.add(upload)
     db.flush()
 
@@ -79,35 +213,37 @@ async def upload_cardex(file: UploadFile = File(...), db: Session = Depends(get_
     errors = []
     rep_cache = {}
     bl_cache = {}
+    mapped_fields = list(col_mapping.values()) if col_mapping else []
 
     for idx, row in df.iterrows():
         try:
             name = str(row.get("nombre_medico", "")).strip()
-            if not name or name.lower() == "nan":
+            if not name or name.lower() in ("nan", "", "none", "null"):
                 continue
 
-            specialty = str(row.get("especialidad", "")).strip() if pd.notna(row.get("especialidad")) else None
-            address = str(row.get("direccion", "")).strip() if pd.notna(row.get("direccion")) else None
-            phone = str(row.get("telefono", "")).strip() if pd.notna(row.get("telefono")) else None
-            email = str(row.get("email", "")).strip() if pd.notna(row.get("email")) else None
-            rep_name = str(row.get("nombre_visitador", "")).strip() if pd.notna(row.get("nombre_visitador")) else None
-            bl_name = str(row.get("linea_negocio", "")).strip() if pd.notna(row.get("linea_negocio")) else None
-            freq_raw = row.get("frecuencia_visita_dias", 30)
-            prescribes = str(row.get("productos_prescribe", "")).strip() if pd.notna(row.get("productos_prescribe")) else None
-            notes = str(row.get("notas", "")).strip() if pd.notna(row.get("notas")) else None
+            specialty = _safe_str(row, "especialidad")
+            address = _safe_str(row, "direccion")
+            phone = _safe_str(row, "telefono")
+            email = _safe_str(row, "email")
+            rep_name = _safe_str(row, "nombre_visitador")
+            bl_name = _safe_str(row, "linea_negocio")
+            prescribes = _safe_str(row, "productos_prescribe")
+            notes = _safe_str(row, "notas")
 
+            freq_raw = row.get("frecuencia_visita_dias", 30)
             try:
-                frequency = int(freq_raw) if freq_raw and str(freq_raw) != "nan" else 30
+                frequency = int(float(str(freq_raw))) if freq_raw and str(freq_raw).lower() not in ("nan", "none", "") else 30
             except (ValueError, TypeError):
                 frequency = 30
 
             # Find or create rep
             rep_id = None
-            if rep_name and rep_name.lower() != "nan":
+            if rep_name:
                 if rep_name not in rep_cache:
-                    rep = db.query(MedicalRep).filter(MedicalRep.name.ilike(rep_name)).first()
+                    rep = db.query(MedicalRep).filter(MedicalRep.name.ilike(f"%{rep_name}%")).first()
                     if not rep:
-                        rep = MedicalRep(name=rep_name, email=f"{rep_name.lower().replace(' ', '.')}@company.com")
+                        email_gen = f"{rep_name.lower().replace(' ', '.').replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u')}@company.com"
+                        rep = MedicalRep(name=rep_name, email=email_gen)
                         db.add(rep)
                         db.flush()
                     rep_cache[rep_name] = rep.id
@@ -115,9 +251,9 @@ async def upload_cardex(file: UploadFile = File(...), db: Session = Depends(get_
 
             # Find or create business line
             bl_id = None
-            if bl_name and bl_name.lower() != "nan":
+            if bl_name:
                 if bl_name not in bl_cache:
-                    bl = db.query(BusinessLine).filter(BusinessLine.name.ilike(bl_name)).first()
+                    bl = db.query(BusinessLine).filter(BusinessLine.name.ilike(f"%{bl_name}%")).first()
                     if not bl:
                         bl = BusinessLine(name=bl_name)
                         db.add(bl)
@@ -126,17 +262,17 @@ async def upload_cardex(file: UploadFile = File(...), db: Session = Depends(get_
                 bl_id = bl_cache[bl_name]
 
             # Find or create doctor
-            existing = db.query(Doctor).filter(Doctor.name.ilike(name)).first()
+            existing = db.query(Doctor).filter(Doctor.name.ilike(f"%{name}%")).first()
             if existing:
-                existing.specialty = specialty or existing.specialty
-                existing.address = address or existing.address
-                existing.phone = phone or existing.phone
-                existing.email = email or existing.email
-                existing.rep_id = rep_id or existing.rep_id
-                existing.business_line_id = bl_id or existing.business_line_id
+                if specialty: existing.specialty = specialty
+                if address: existing.address = address
+                if phone: existing.phone = phone
+                if email: existing.email = email
+                if rep_id: existing.rep_id = rep_id
+                if bl_id: existing.business_line_id = bl_id
                 existing.visit_frequency = frequency
-                existing.prescribes_products = prescribes or existing.prescribes_products
-                existing.notes = notes or existing.notes
+                if prescribes: existing.prescribes_products = prescribes
+                if notes: existing.notes = notes
                 existing.is_active = True
                 updated += 1
             else:
@@ -150,7 +286,7 @@ async def upload_cardex(file: UploadFile = File(...), db: Session = Depends(get_
                     business_line_id=bl_id,
                     visit_frequency=frequency,
                     prescribes_products=prescribes,
-                    notes=notes
+                    notes=notes,
                 )
                 db.add(doctor)
                 created += 1
@@ -167,5 +303,17 @@ async def upload_cardex(file: UploadFile = File(...), db: Session = Depends(get_
         "total_rows": len(df),
         "created": created,
         "updated": updated,
-        "errors": errors[:10]
+        "columns_detected": mapped_fields or [str(c) for c in df.columns],
+        "errors": errors[:10],
     }
+
+
+def _safe_str(row, field):
+    """Safely extract a string value from a row."""
+    val = row.get(field, None)
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    s = str(val).strip()
+    if s.lower() in ("nan", "none", "null", ""):
+        return None
+    return s
