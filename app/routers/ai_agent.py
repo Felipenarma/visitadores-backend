@@ -5,6 +5,8 @@ from typing import Any
 import os
 import json
 import anthropic
+from dotenv import load_dotenv
+load_dotenv()
 from ..database import get_db
 from ..models import Visit, Doctor, MedicalRep
 from ..schemas import AgentChatRequest, AgentChatResponse, AgentMessage
@@ -247,6 +249,13 @@ def execute_tool(tool_name: str, tool_input: dict, rep_id: int, db: Session) -> 
 
     return {"error": f"Herramienta desconocida: {tool_name}"}
 
+
+@router.get("/check")
+def check_api_key():
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if key:
+        return {"status": "ok", "key_preview": key[:12] + "..."}
+    return {"status": "missing", "env_keys": [k for k in os.environ.keys() if "ANTHROPIC" in k.upper() or "API" in k.upper()]}
 
 @router.post("/chat", response_model=AgentChatResponse)
 def chat(request: AgentChatRequest, db: Session = Depends(get_db)):
