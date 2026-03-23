@@ -260,7 +260,7 @@ def check_api_key():
 
 @router.post("/chat", response_model=AgentChatResponse)
 def chat(request: AgentChatRequest, db: Session = Depends(get_db)):
-    api_key = os.environ.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+    api_key = (os.environ.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or "").strip()
     if not api_key:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY no configurada")
 
