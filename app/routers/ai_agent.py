@@ -268,80 +268,80 @@ def chat(request: AgentChatRequest, db: Session = Depends(get_db)):
     if not rep:
         raise HTTPException(status_code=404, detail="Visitador no encontrado")
 
-    client = anthropic.Anthropic(api_key=api_key)
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
 
-    messages = []
-    for msg in request.conversation_history:
-        messages.append({"role": msg.role, "content": msg.content})
+        messages = []
+        for msg in request.conversation_history:
+            messages.append({"role": msg.role, "content": msg.content})
 
-    messages.append({"role": "user", "content": request.message})
+        messages.append({"role": "user", "content": request.message})
 
-    system_with_context = f"{SYSTEM_PROMPT}\n\nContexto actual:\n- Visitador: {rep.name}\n- ID: {rep.id}\n- Fecha actual: {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}"
+        system_with_context = f"{SYSTEM_PROMPT}\n\nContexto actual:\n- Visitador: {rep.name}\n- ID: {rep.id}\n- Fecha actual: {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}"
 
-    # Tool-calling loop
-    final_response = ""
-    max_iterations = 5
-    iteration = 0
+        # Tool-calling loop
+        final_response = ""
+        max_iterations = 5
+        iteration = 0
 
-    while iteration < max_iterations:
-        iteration += 1
-        response = client.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=2048,
-            system=system_with_context,
-            tools=TOOLS,
-            messages=messages
-        )
+        while iteration < max_iterations:
+            iteration += 1
+            response = client.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=2048,
+                system=system_with_context,
+                tools=TOOLS,
+                messages=messages
+            )
 
-        # Check stop reason
-        if response.stop_reason == "end_turn":
-            # Extract text response
-            for block in response.content:
-                if hasattr(block, "text"):
-                    final_response = block.text
-            break
+            # Check stop reason
+            if response.stop_reason == "end_turn":
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        final_response = block.text
+                break
 
-        elif response.stop_reason == "tool_use":
-            # Process tool calls
-            tool_results = []
-            assistant_content = response.content
+            elif response.stop_reason == "tool_use":
+                tool_results = []
+                assistant_content = response.content
 
-            for block in response.content:
-                if block.type == "tool_use":
-                    tool_result = execute_tool(block.name, block.input, request.rep_id, db)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(tool_result, ensure_ascii=False, default=str)
-                    })
+                for block in response.content:
+                    if block.type == "tool_use":
+                        tool_result = execute_tool(block.name, block.input, request.rep_id, db)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(tool_result, ensure_ascii=False, default=str)
+                        })
 
-            # Add assistant message with tool use
-            messages.append({
-                "role": "assistant",
-                "content": [
-                    {"type": b.type, **({
-                        "text": b.text
-                    } if b.type == "text" else {
-                        "id": b.id,
-                        "name": b.name,
-                        "input": b.input
-                    })}
-                    for b in assistant_content
-                ]
-            })
+                # Add assistant message with tool use
+                messages.append({
+                    "role": "assistant",
+                    "content": [
+                        {"type": b.type, **(
+                            {"text": b.text} if b.type == "text" else
+                            {"id": b.id, "name": b.name, "input": b.input}
+                        )}
+                        for b in assistant_content
+                    ]
+                })
 
-            # Add tool results
-            messages.append({
-                "role": "user",
-                "content": tool_results
-            })
-        else:
-            # Unexpected stop reason
-            final_response = "Lo siento, ocurrió un error inesperado."
-            break
+                # Add tool results
+                messages.append({
+                    "role": "user",
+                    "content": tool_results
+                })
+            else:
+                final_response = "Lo siento, ocurrió un error inesperado."
+                break
 
-    if not final_response:
-        final_response = "Lo siento, no pude procesar tu solicitud."
+        if not final_response:
+            final_response = "Lo siento, no pude procesar tu solicitud."
+
+    except Exception as e:
+        import traceback
+        print(f"ERROR in agent chat: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Error del agente: {str(e)}")
 
     # Build updated conversation history
     updated_history = list(request.conversation_history)
