@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Any
 import os
 import json
-import anthropic
+import httpx
 from dotenv import load_dotenv
 load_dotenv()
 from ..database import get_db
@@ -269,8 +269,6 @@ def chat(request: AgentChatRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Visitador no encontrado")
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-
         messages = []
         for msg in request.conversation_history:
             messages.append({"role": msg.role, "content": msg.content})
@@ -286,44 +284,55 @@ def chat(request: AgentChatRequest, db: Session = Depends(get_db)):
 
         while iteration < max_iterations:
             iteration += 1
-            response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=2048,
-                system=system_with_context,
-                tools=TOOLS,
-                messages=messages
-            )
+
+            # Direct HTTP call to Anthropic API
+            with httpx.Client(timeout=60.0) as http_client:
+                api_response = http_client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-api-key": api_key,
+                        "anthropic-version": "2023-06-01",
+                    },
+                    json={
+                        "model": "claude-haiku-4-5-20251001",
+                        "max_tokens": 2048,
+                        "system": system_with_context,
+                        "tools": TOOLS,
+                        "messages": messages,
+                    }
+                )
+
+            if api_response.status_code != 200:
+                raise Exception(f"Anthropic API error {api_response.status_code}: {api_response.text}")
+
+            response_data = api_response.json()
+            stop_reason = response_data.get("stop_reason", "")
+            content = response_data.get("content", [])
 
             # Check stop reason
-            if response.stop_reason == "end_turn":
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        final_response = block.text
+            if stop_reason == "end_turn":
+                for block in content:
+                    if block.get("type") == "text":
+                        final_response = block.get("text", "")
                 break
 
-            elif response.stop_reason == "tool_use":
+            elif stop_reason == "tool_use":
                 tool_results = []
-                assistant_content = response.content
 
-                for block in response.content:
-                    if block.type == "tool_use":
-                        tool_result = execute_tool(block.name, block.input, request.rep_id, db)
+                for block in content:
+                    if block.get("type") == "tool_use":
+                        tool_result = execute_tool(block["name"], block["input"], request.rep_id, db)
                         tool_results.append({
                             "type": "tool_result",
-                            "tool_use_id": block.id,
+                            "tool_use_id": block["id"],
                             "content": json.dumps(tool_result, ensure_ascii=False, default=str)
                         })
 
                 # Add assistant message with tool use
                 messages.append({
                     "role": "assistant",
-                    "content": [
-                        {"type": b.type, **(
-                            {"text": b.text} if b.type == "text" else
-                            {"id": b.id, "name": b.name, "input": b.input}
-                        )}
-                        for b in assistant_content
-                    ]
+                    "content": content
                 })
 
                 # Add tool results
