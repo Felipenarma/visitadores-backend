@@ -53,6 +53,15 @@ COLUMN_PATTERNS = {
         r"detalle", r"informaci[oó]n.*adicional", r"remarks", r"prioridad",
         r"estado", r"status", r"clasificaci",
     ],
+    "rut": [
+        r"^rut$", r"^rut_", r"rut.*medico", r"rut.*doctor", r"rut.*profesional",
+        r"^run$", r"^cedula", r"^ci$", r"^dni$", r"identificaci",
+    ],
+    "centro_medico": [
+        r"centro.*m[eé]dico", r"cl[ií]nica", r"hospital", r"consulta",
+        r"instituci[oó]n", r"lugar.*trabajo", r"establecimiento",
+        r"centro.*salud", r"recinto", r"lugar.*atenci",
+    ],
 }
 
 
@@ -335,6 +344,8 @@ async def upload_cardex(file: UploadFile = File(...), db: Session = Depends(get_
             bl_name = _safe_str(row, "linea_negocio")
             prescribes = _safe_str(row, "productos_prescribe")
             notes = _safe_str(row, "notas")
+            rut = _safe_str(row, "rut")
+            centro_medico = _safe_str(row, "centro_medico")
 
             freq_raw = row.get("frecuencia_visita_dias", 30)
             try:
@@ -367,8 +378,13 @@ async def upload_cardex(file: UploadFile = File(...), db: Session = Depends(get_
                     bl_cache[bl_name] = bl.id
                 bl_id = bl_cache[bl_name]
 
-            # Find or create doctor
-            existing = db.query(Doctor).filter(Doctor.name.ilike(name)).first()
+            # Find or create doctor (match by RUT first, then by name)
+            existing = None
+            if rut:
+                existing = db.query(Doctor).filter(Doctor.rut == rut).first()
+            if not existing:
+                existing = db.query(Doctor).filter(Doctor.name.ilike(name)).first()
+
             if existing:
                 if specialty: existing.specialty = specialty
                 if address: existing.address = address
@@ -379,11 +395,15 @@ async def upload_cardex(file: UploadFile = File(...), db: Session = Depends(get_
                 existing.visit_frequency = frequency
                 if prescribes: existing.prescribes_products = prescribes
                 if notes: existing.notes = notes
+                if rut: existing.rut = rut
+                if centro_medico: existing.medical_center = centro_medico
                 existing.is_active = True
                 updated += 1
             else:
                 doctor = Doctor(
                     name=name,
+                    rut=rut,
+                    medical_center=centro_medico,
                     specialty=specialty,
                     address=address,
                     phone=phone,

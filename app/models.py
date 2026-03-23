@@ -37,6 +37,8 @@ class Doctor(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(150), nullable=False)
+    rut = Column(String(20), nullable=True, index=True)
+    medical_center = Column(String(200), nullable=True)
     specialty = Column(String(100), nullable=True)
     address = Column(Text, nullable=True)
     phone = Column(String(20), nullable=True)

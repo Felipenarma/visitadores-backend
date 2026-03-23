@@ -12,8 +12,27 @@ from ..schemas import SaleOut, SalesSummaryItem
 router = APIRouter(prefix="/api/sales", tags=["sales"])
 
 
-def match_doctor(name: str, db: Session) -> Optional[Doctor]:
-    """Try to match a doctor by name (fuzzy)."""
+def match_doctor_by_rut(rut: str, db: Session) -> Optional[Doctor]:
+    """Match a doctor by RUT."""
+    if not rut:
+        return None
+    rut = rut.strip().replace(".", "").replace("-", "").upper()
+    doctors = db.query(Doctor).filter(Doctor.rut.isnot(None)).all()
+    for doc in doctors:
+        doc_rut = doc.rut.strip().replace(".", "").replace("-", "").upper() if doc.rut else ""
+        if doc_rut == rut:
+            return doc
+    return None
+
+
+def match_doctor(name: str, db: Session, rut: str = None) -> Optional[Doctor]:
+    """Try to match a doctor by RUT first, then by name (fuzzy)."""
+    # Try RUT first
+    if rut:
+        doc = match_doctor_by_rut(rut, db)
+        if doc:
+            return doc
+
     if not name:
         return None
     name = name.strip().lower()
@@ -59,22 +78,23 @@ async def upload_sales(file: UploadFile = File(...), db: Session = Depends(get_d
     # Normalize column names
     df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
 
-    required_cols = ["nombre_medico", "producto", "monto", "fecha_venta"]
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        # Try alternative column names
-        col_map = {
-            "doctor": "nombre_medico", "medico": "nombre_medico", "name": "nombre_medico",
-            "product": "producto", "amount": "monto", "total": "monto",
-            "date": "fecha_venta", "fecha": "fecha_venta", "sale_date": "fecha_venta"
-        }
-        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Columnas faltantes: {', '.join(missing)}. Columnas requeridas: {', '.join(required_cols)}"
-            )
+    # Try alternative column names
+    col_map = {
+        "doctor": "nombre_medico", "medico": "nombre_medico", "name": "nombre_medico",
+        "nombre": "nombre_medico", "nombre_doctor": "nombre_medico",
+        "product": "producto", "amount": "monto", "total": "monto",
+        "date": "fecha_venta", "fecha": "fecha_venta", "sale_date": "fecha_venta",
+        "rut_medico": "rut", "rut_doctor": "rut", "run": "rut",
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+
+    # At minimum we need product and amount; doctor can match by RUT or name
+    has_doctor_id = "rut" in df.columns or "nombre_medico" in df.columns
+    if not has_doctor_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Se necesita al menos una columna 'rut' o 'nombre_medico' para identificar al médico. Columnas encontradas: {', '.join(df.columns)}"
+        )
 
     upload = SalesUpload(filename=file.filename, rows_processed=len(df))
     db.add(upload)
@@ -86,8 +106,9 @@ async def upload_sales(file: UploadFile = File(...), db: Session = Depends(get_d
 
     for _, row in df.iterrows():
         try:
-            doctor_name = str(row.get("nombre_medico", "")).strip()
-            product = str(row.get("producto", "")).strip()
+            doctor_name = str(row.get("nombre_medico", "")).strip() if "nombre_medico" in row else ""
+            doctor_rut = str(row.get("rut", "")).strip() if "rut" in row else ""
+            product = str(row.get("producto", "")).strip() if "producto" in row else ""
             amount_raw = row.get("monto", 0)
             date_raw = row.get("fecha_venta", None)
 
@@ -103,7 +124,7 @@ async def upload_sales(file: UploadFile = File(...), db: Session = Depends(get_d
                 except Exception:
                     sale_date = None
 
-            doctor = match_doctor(doctor_name, db)
+            doctor = match_doctor(doctor_name, db, rut=doctor_rut)
 
             sale = Sale(
                 doctor_id=doctor.id if doctor else None,
