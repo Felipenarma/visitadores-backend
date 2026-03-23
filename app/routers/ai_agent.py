@@ -287,7 +287,7 @@ def chat(request: AgentChatRequest, db: Session = Depends(get_db)):
         while iteration < max_iterations:
             iteration += 1
             response = client.messages.create(
-                model="claude-haiku-4-5",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=2048,
                 system=system_with_context,
                 tools=TOOLS,
