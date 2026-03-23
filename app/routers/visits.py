@@ -96,6 +96,7 @@ def delete_visit(visit_id: int, db: Session = Depends(get_db)):
 @router.post("/generate")
 def generate_visits(data: GenerateVisitsRequest, db: Session = Depends(get_db)):
     months_ahead = data.months_ahead or 6
+    max_per_day = data.max_per_day if hasattr(data, 'max_per_day') and data.max_per_day else 7
     end_date = datetime.utcnow() + timedelta(days=30 * months_ahead)
     start_date = datetime.utcnow()
 
@@ -104,50 +105,81 @@ def generate_visits(data: GenerateVisitsRequest, db: Session = Depends(get_db)):
         query = query.filter(Doctor.rep_id == data.rep_id)
 
     doctors = query.all()
+
+    if not doctors:
+        return {"message": "No hay doctores con visitador asignado", "created": 0, "skipped": 0}
+
+    # Group doctors by rep
+    from collections import defaultdict
+    rep_doctors = defaultdict(list)
+    for doc in doctors:
+        rep_doctors[doc.rep_id].append(doc)
+
     total_created = 0
     skipped = 0
 
-    for doctor in doctors:
-        if not doctor.visit_frequency or doctor.visit_frequency <= 0:
-            continue
+    for rep_id, rep_docs in rep_doctors.items():
+        # Build a pool of visits needed: each doctor needs visits based on frequency
+        visit_pool = []
+        for doc in rep_docs:
+            freq = doc.visit_frequency if doc.visit_frequency and doc.visit_frequency > 0 else 30
+            # Calculate how many visits in the period
+            current = start_date
+            while current <= end_date:
+                # Check if visit already exists
+                existing = db.query(Visit).filter(
+                    Visit.doctor_id == doc.id,
+                    Visit.scheduled_date >= current - timedelta(hours=12),
+                    Visit.scheduled_date <= current + timedelta(hours=12)
+                ).first()
+                if not existing:
+                    visit_pool.append({"doctor_id": doc.id, "rep_id": rep_id})
+                else:
+                    skipped += 1
+                current += timedelta(days=freq)
 
-        # Find last scheduled or completed visit
-        last_visit = db.query(Visit).filter(
-            Visit.doctor_id == doctor.id,
-            Visit.scheduled_date >= start_date
-        ).order_by(Visit.scheduled_date.desc()).first()
+        # Now distribute visits across weekdays (Mon-Fri), max_per_day per day
+        current_date = start_date
+        pool_idx = 0
 
-        if last_visit:
-            # Start from after the last scheduled visit
-            next_date = last_visit.scheduled_date + timedelta(days=doctor.visit_frequency)
-        else:
-            next_date = start_date
+        while pool_idx < len(visit_pool) and current_date <= end_date:
+            # Skip weekends (5=Saturday, 6=Sunday)
+            if current_date.weekday() >= 5:
+                current_date += timedelta(days=1)
+                continue
 
-        while next_date <= end_date:
-            # Check if visit already exists on this date (within 1 day)
-            existing = db.query(Visit).filter(
-                Visit.doctor_id == doctor.id,
-                Visit.scheduled_date >= next_date - timedelta(hours=12),
-                Visit.scheduled_date <= next_date + timedelta(hours=12)
-            ).first()
+            # Schedule up to max_per_day visits on this day
+            day_count = 0
+            # Check how many visits already on this day for this rep
+            existing_day = db.query(Visit).filter(
+                Visit.rep_id == rep_id,
+                Visit.scheduled_date >= current_date.replace(hour=0, minute=0, second=0),
+                Visit.scheduled_date < current_date.replace(hour=23, minute=59, second=59)
+            ).count()
+            day_count = existing_day
 
-            if not existing:
+            while pool_idx < len(visit_pool) and day_count < max_per_day:
+                v = visit_pool[pool_idx]
+                # Set time slots: 8:00, 9:00, 10:00, etc.
+                hour = 8 + day_count
+                visit_time = current_date.replace(hour=hour, minute=0, second=0, microsecond=0)
+
                 visit = Visit(
-                    doctor_id=doctor.id,
-                    rep_id=doctor.rep_id,
-                    scheduled_date=next_date,
+                    doctor_id=v["doctor_id"],
+                    rep_id=v["rep_id"],
+                    scheduled_date=visit_time,
                     status="scheduled"
                 )
                 db.add(visit)
                 total_created += 1
-            else:
-                skipped += 1
+                day_count += 1
+                pool_idx += 1
 
-            next_date += timedelta(days=doctor.visit_frequency)
+            current_date += timedelta(days=1)
 
     db.commit()
     return {
-        "message": f"Generación completada: {total_created} visitas creadas, {skipped} ya existentes",
+        "message": f"Generación completada: {total_created} visitas creadas, {skipped} ya existentes. Distribuidas en máx {max_per_day} por día (Lun-Vie).",
         "created": total_created,
         "skipped": skipped
     }
