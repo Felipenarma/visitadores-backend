@@ -90,10 +90,13 @@ class Sale(Base):
     id = Column(Integer, primary_key=True, index=True)
     doctor_id = Column(Integer, ForeignKey("doctors.id"), nullable=True)
     product = Column(String(200), nullable=True)
+    category = Column(String(100), nullable=True)
+    quantity = Column(Integer, default=1)
     amount = Column(Float, default=0.0)
     sale_date = Column(DateTime, nullable=True)
     upload_id = Column(Integer, ForeignKey("sales_uploads.id"), nullable=True)
     doctor_name_raw = Column(String(200), nullable=True)
+    doctor_rut_raw = Column(String(20), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
     doctor = relationship("Doctor", back_populates="sales")

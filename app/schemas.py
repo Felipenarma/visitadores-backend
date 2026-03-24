@@ -139,7 +139,10 @@ class SaleOut(BaseModel):
     id: int
     doctor_id: Optional[int] = None
     doctor_name_raw: Optional[str] = None
+    doctor_rut_raw: Optional[str] = None
     product: Optional[str] = None
+    category: Optional[str] = None
+    quantity: Optional[int] = 1
     amount: Optional[float] = None
     sale_date: Optional[datetime] = None
     upload_id: Optional[int] = None
@@ -153,6 +156,8 @@ class SaleOut(BaseModel):
 class SalesSummaryItem(BaseModel):
     doctor_id: Optional[int] = None
     doctor_name: str
+    doctor_rut: Optional[str] = None
+    total_units: int
     total_sales: float
     sales_count: int
     visits_count: int
