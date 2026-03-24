@@ -65,7 +65,10 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+    import os
+    db_url = os.getenv("DATABASE_URL", "NOT SET")
+    db_type = "postgresql" if "postgres" in db_url else "sqlite" if "sqlite" in db_url else "unknown"
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat(), "db_type": db_type, "db_url_prefix": db_url[:30] + "..." if len(db_url) > 30 else db_url}
 
 
 @app.post("/api/seed")
