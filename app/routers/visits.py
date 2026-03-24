@@ -103,8 +103,11 @@ def generate_visits(data: GenerateVisitsRequest, db: Session = Depends(get_db)):
     """
     months_ahead = data.months_ahead or 6
     MAX_PER_DAY = 7
-    end_date = datetime.utcnow() + timedelta(days=30 * months_ahead)
-    start_date = datetime.utcnow()
+    if data.start_date:
+        start_date = datetime.fromisoformat(data.start_date)
+    else:
+        start_date = datetime.utcnow()
+    end_date = start_date + timedelta(days=30 * months_ahead)
 
     query = db.query(Doctor).filter(Doctor.is_active == True, Doctor.rep_id != None)
     if data.rep_id:

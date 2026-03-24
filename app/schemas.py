@@ -132,6 +132,7 @@ class VisitOut(VisitBase):
 class GenerateVisitsRequest(BaseModel):
     rep_id: Optional[int] = None
     months_ahead: Optional[int] = 6
+    start_date: Optional[str] = None  # ISO format: "2026-04-06"
 
 
 # Sales schemas
