@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List
 from ..database import get_db
-from ..models import MedicalRep, Doctor
+from ..models import MedicalRep, Doctor, Visit
 from ..schemas import MedicalRepCreate, MedicalRepUpdate, MedicalRepOut
 
 router = APIRouter(prefix="/api/reps", tags=["reps"])
@@ -75,12 +75,13 @@ def delete_rep(rep_id: int, db: Session = Depends(get_db)):
     rep = db.query(MedicalRep).filter(MedicalRep.id == rep_id).first()
     if not rep:
         raise HTTPException(status_code=404, detail="Visitador no encontrado")
-    count = db.query(func.count(Doctor.id)).filter(Doctor.rep_id == rep_id).scalar()
-    if count > 0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No se puede eliminar: {count} médico(s) están asignados a este visitador"
-        )
+    # Unassign doctors from this rep
+    doctors_updated = db.query(Doctor).filter(Doctor.rep_id == rep_id).update({Doctor.rep_id: None})
+    # Delete all visits for this rep
+    visits_deleted = db.query(Visit).filter(Visit.rep_id == rep_id).delete()
+    # Delete the rep
     db.delete(rep)
     db.commit()
-    return {"message": "Visitador eliminado"}
+    return {
+        "message": f"Visitador eliminado. {doctors_updated} médico(s) desasignados, {visits_deleted} visita(s) eliminadas."
+    }
