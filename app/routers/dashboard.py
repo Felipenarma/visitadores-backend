@@ -94,6 +94,69 @@ def get_sales_by_business_line(db: Session = Depends(get_db)):
     return result
 
 
+@router.get("/daily-tracking")
+def get_daily_tracking(date: str = None, db: Session = Depends(get_db)):
+    """Visitas completadas por visitador para una fecha específica (default: hoy)"""
+    if date:
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            target_date = datetime.utcnow()
+    else:
+        target_date = datetime.utcnow()
+
+    day_start = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+
+    reps = db.query(MedicalRep).filter(MedicalRep.is_active == True).all()
+    result = []
+
+    for rep in reps:
+        total = db.query(func.count(Visit.id)).filter(
+            Visit.rep_id == rep.id,
+            Visit.scheduled_date >= day_start,
+            Visit.scheduled_date < day_end
+        ).scalar() or 0
+
+        completed = db.query(func.count(Visit.id)).filter(
+            Visit.rep_id == rep.id,
+            Visit.scheduled_date >= day_start,
+            Visit.scheduled_date < day_end,
+            Visit.status == "completed"
+        ).scalar() or 0
+
+        pending = db.query(func.count(Visit.id)).filter(
+            Visit.rep_id == rep.id,
+            Visit.scheduled_date >= day_start,
+            Visit.scheduled_date < day_end,
+            Visit.status == "scheduled"
+        ).scalar() or 0
+
+        missed = db.query(func.count(Visit.id)).filter(
+            Visit.rep_id == rep.id,
+            Visit.scheduled_date >= day_start,
+            Visit.scheduled_date < day_end,
+            Visit.status == "missed"
+        ).scalar() or 0
+
+        if total > 0:
+            result.append({
+                "rep_id": rep.id,
+                "rep_name": rep.name,
+                "total": total,
+                "completed": completed,
+                "pending": pending,
+                "missed": missed,
+                "completion_rate": round((completed / total) * 100) if total > 0 else 0
+            })
+
+    result.sort(key=lambda x: x["completion_rate"], reverse=True)
+    return {
+        "date": day_start.strftime("%Y-%m-%d"),
+        "reps": result
+    }
+
+
 @router.get("/rep/{rep_id}/stats")
 def get_rep_stats(rep_id: int, db: Session = Depends(get_db)):
     rep = db.query(MedicalRep).filter(MedicalRep.id == rep_id).first()
