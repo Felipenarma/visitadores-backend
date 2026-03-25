@@ -6,7 +6,7 @@ import random
 
 from .database import engine, get_db, Base
 from .models import BusinessLine, MedicalRep, Doctor, Visit, Sale
-from .routers import business_lines, reps, doctors, visits, sales, cardex, dashboard, ai_agent, knowledge
+from .routers import business_lines, reps, doctors, visits, sales, cardex, dashboard, ai_agent, knowledge, images
 
 # Create tables (checkfirst=True avoids errors if tables already exist)
 Base.metadata.create_all(bind=engine, checkfirst=True)
@@ -31,6 +31,7 @@ app.include_router(cardex.router)
 app.include_router(dashboard.router)
 app.include_router(ai_agent.router)
 app.include_router(knowledge.router)
+app.include_router(images.router)
 
 
 def seed_business_lines(db: Session):

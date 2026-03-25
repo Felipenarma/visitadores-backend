@@ -8,7 +8,7 @@ import httpx
 from dotenv import load_dotenv
 load_dotenv()
 from ..database import get_db
-from ..models import Visit, Doctor, MedicalRep, KnowledgeBase
+from ..models import Visit, Doctor, MedicalRep, KnowledgeBase, UploadedImage
 from ..schemas import AgentChatRequest, AgentChatResponse, AgentMessage
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -284,7 +284,18 @@ def chat(request: AgentChatRequest, db: Session = Depends(get_db)):
                 bl_name = entry.business_line.name if entry.business_line else "General"
                 kb_text += f"[{entry.category.upper()} - {bl_name}] {entry.title}:\n{entry.content}\n\n"
 
-        system_with_context = f"{SYSTEM_PROMPT}\n\nContexto actual:\n- Visitador: {rep.name}\n- ID: {rep.id}\n- Fecha actual: {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}{kb_text}"
+        # Load available images (QR codes, etc)
+        available_images = db.query(UploadedImage).filter(UploadedImage.is_active == True).all()
+        images_text = ""
+        if available_images:
+            images_text = "\n\n--- IMAGENES DISPONIBLES (QR, productos, etc) ---\nCuando el visitador pida un QR o imagen, responde con el link completo para que pueda verla o compartirla:\n\n"
+            base_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "web-production-496eb.up.railway.app")
+            for img in available_images:
+                bl_name = img.business_line.name if img.business_line else "General"
+                img_url = f"https://{base_url}/api/images/{img.id}/file"
+                images_text += f"- [{img.category.upper()}] {img.name}: {img.description or ''} -> URL: {img_url}\n"
+
+        system_with_context = f"{SYSTEM_PROMPT}\n\nContexto actual:\n- Visitador: {rep.name}\n- ID: {rep.id}\n- Fecha actual: {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}{kb_text}{images_text}"
 
         # Tool-calling loop
         final_response = ""

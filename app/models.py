@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Text, LargeBinary
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -123,5 +123,22 @@ class KnowledgeBase(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    business_line = relationship("BusinessLine")
+
+
+class UploadedImage(Base):
+    __tablename__ = "uploaded_images"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    filename = Column(String(255), nullable=False)
+    content_type = Column(String(50), nullable=False)
+    data = Column(LargeBinary, nullable=False)
+    category = Column(String(100), default="qr")  # qr, product, general
+    business_line_id = Column(Integer, ForeignKey("business_lines.id"), nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
 
     business_line = relationship("BusinessLine")
