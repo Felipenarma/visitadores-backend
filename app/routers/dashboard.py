@@ -73,11 +73,21 @@ def get_visits_by_rep(db: Session = Depends(get_db)):
     month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     for rep in reps:
-        count = db.query(func.count(Visit.id)).filter(
+        completed = db.query(func.count(Visit.id)).filter(
+            Visit.rep_id == rep.id,
+            Visit.scheduled_date >= month_start,
+            Visit.status == "completed"
+        ).scalar()
+        total = db.query(func.count(Visit.id)).filter(
             Visit.rep_id == rep.id,
             Visit.scheduled_date >= month_start
         ).scalar()
-        result.append({"rep_name": rep.name, "visits": count, "rep_id": rep.id})
+        result.append({
+            "rep_name": rep.name,
+            "completed": completed,
+            "total": total,
+            "rep_id": rep.id
+        })
     return result
 
 
