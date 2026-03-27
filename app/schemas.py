@@ -61,6 +61,7 @@ class DoctorBase(BaseModel):
     rut: Optional[str] = None
     medical_center: Optional[str] = None
     specialty: Optional[str] = None
+    city: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
