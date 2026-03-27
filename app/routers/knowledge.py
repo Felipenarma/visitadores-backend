@@ -3,6 +3,9 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import io
 import traceback
+import logging
+
+logger = logging.getLogger(__name__)
 
 from ..database import get_db
 from ..models import KnowledgeBase, BusinessLine
@@ -216,6 +219,79 @@ def upload_file(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error procesando archivo: {str(e)}")
+
+
+@router.post("/upload-multiple")
+def upload_multiple_files(
+    files: List[UploadFile] = File(...),
+    category: str = Form("archivo"),
+    business_line_id: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Upload multiple files at once."""
+    results = []
+    total_entries = 0
+    total_chars = 0
+    bl_id = int(business_line_id) if business_line_id and business_line_id.strip() else None
+
+    for file in files:
+        try:
+            file_bytes = file.file.read()
+            filename = file.filename or "archivo"
+            content = parse_file(file_bytes, filename)
+
+            if not content or content.startswith("Error") or content.startswith("No se pudo"):
+                results.append({"filename": filename, "success": False, "message": content})
+                continue
+
+            chunks = []
+            if len(content) > 4000:
+                lines = content.split('\n')
+                current_chunk = []
+                current_len = 0
+                chunk_num = 1
+                for line in lines:
+                    if current_len + len(line) > 3000 and current_chunk:
+                        chunks.append((chunk_num, '\n'.join(current_chunk)))
+                        chunk_num += 1
+                        current_chunk = [line]
+                        current_len = len(line)
+                    else:
+                        current_chunk.append(line)
+                        current_len += len(line)
+                if current_chunk:
+                    chunks.append((chunk_num, '\n'.join(current_chunk)))
+            else:
+                chunks = [(1, content)]
+
+            entries = 0
+            for chunk_num, chunk_content in chunks:
+                title = filename
+                if len(chunks) > 1:
+                    title = f"{filename} (parte {chunk_num}/{len(chunks)})"
+                item = KnowledgeBase(
+                    title=title, category=category, content=chunk_content,
+                    business_line_id=bl_id, is_active=True,
+                )
+                db.add(item)
+                entries += 1
+
+            total_entries += entries
+            total_chars += len(content)
+            results.append({"filename": filename, "success": True, "entries_created": entries, "characters": len(content)})
+        except Exception as e:
+            logger.error(f"Error processing {file.filename}: {e}")
+            results.append({"filename": file.filename, "success": False, "message": str(e)})
+
+    db.commit()
+    success_count = sum(1 for r in results if r.get("success"))
+    return {
+        "success": success_count > 0,
+        "message": f"{success_count} de {len(files)} archivos procesados exitosamente",
+        "files": results,
+        "total_entries_created": total_entries,
+        "total_characters": total_chars,
+    }
 
 
 @router.put("/{item_id}", response_model=KnowledgeBaseOut)
