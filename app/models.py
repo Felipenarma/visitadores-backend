@@ -41,6 +41,7 @@ class Doctor(Base):
     medical_center = Column(String(200), nullable=True)
     specialty = Column(String(100), nullable=True)
     city = Column(String(100), nullable=True)
+    commune = Column(String(100), nullable=True)
     address = Column(Text, nullable=True)
     phone = Column(String(20), nullable=True)
     email = Column(String(150), nullable=True)

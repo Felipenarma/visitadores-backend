@@ -62,6 +62,7 @@ class DoctorBase(BaseModel):
     medical_center: Optional[str] = None
     specialty: Optional[str] = None
     city: Optional[str] = None
+    commune: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None

@@ -19,6 +19,9 @@ with engine.connect() as conn:
     if "city" not in doctor_cols:
         conn.execute(sa_text("ALTER TABLE doctors ADD COLUMN city VARCHAR(100)"))
         conn.commit()
+    if "commune" not in doctor_cols:
+        conn.execute(sa_text("ALTER TABLE doctors ADD COLUMN commune VARCHAR(100)"))
+        conn.commit()
 
 app = FastAPI(title="Visitadores Médicos API", version="1.0.0")
 
