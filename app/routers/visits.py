@@ -93,6 +93,17 @@ def delete_visit(visit_id: int, db: Session = Depends(get_db)):
     return {"message": "Visita eliminada"}
 
 
+@router.delete("/clear-scheduled")
+def clear_scheduled_visits(rep_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
+    """Delete all scheduled visits (not completed/missed). Optionally filter by rep_id."""
+    query = db.query(Visit).filter(Visit.status == "scheduled")
+    if rep_id is not None:
+        query = query.filter(Visit.rep_id == rep_id)
+    count = query.delete(synchronize_session=False)
+    db.commit()
+    return {"message": f"{count} visitas agendadas eliminadas", "deleted": count}
+
+
 @router.post("/generate")
 def generate_visits(data: GenerateVisitsRequest, db: Session = Depends(get_db)):
     """
