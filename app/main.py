@@ -13,15 +13,18 @@ Base.metadata.create_all(bind=engine, checkfirst=True)
 
 # Auto-migrate: add new columns to existing tables
 from sqlalchemy import text as sa_text, inspect as sa_inspect
-with engine.connect() as conn:
-    insp = sa_inspect(engine)
-    doctor_cols = [c["name"] for c in insp.get_columns("doctors")]
-    if "city" not in doctor_cols:
-        conn.execute(sa_text("ALTER TABLE doctors ADD COLUMN city VARCHAR(100)"))
-        conn.commit()
-    if "commune" not in doctor_cols:
-        conn.execute(sa_text("ALTER TABLE doctors ADD COLUMN commune VARCHAR(100)"))
-        conn.commit()
+try:
+    with engine.connect() as conn:
+        insp = sa_inspect(engine)
+        doctor_cols = [c["name"] for c in insp.get_columns("doctors")]
+        if "city" not in doctor_cols:
+            conn.execute(sa_text("ALTER TABLE doctors ADD COLUMN city VARCHAR(100)"))
+            conn.commit()
+        if "commune" not in doctor_cols:
+            conn.execute(sa_text("ALTER TABLE doctors ADD COLUMN commune VARCHAR(100)"))
+            conn.commit()
+except Exception as e:
+    print(f"Migration warning: {e}")
 
 app = FastAPI(title="Visitadores Médicos API", version="1.0.0")
 
