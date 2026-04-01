@@ -6,25 +6,10 @@ import random
 
 from .database import engine, get_db, Base
 from .models import BusinessLine, MedicalRep, Doctor, Visit, Sale
-from .routers import business_lines, reps, doctors, visits, sales, cardex, dashboard, ai_agent, knowledge, images
+from .routers import business_lines, reps, doctors, visits, sales, cardex, dashboard, ai_agent
 
 # Create tables (checkfirst=True avoids errors if tables already exist)
 Base.metadata.create_all(bind=engine, checkfirst=True)
-
-# Auto-migrate: add new columns to existing tables
-from sqlalchemy import text as sa_text, inspect as sa_inspect
-try:
-    with engine.connect() as conn:
-        insp = sa_inspect(engine)
-        doctor_cols = [c["name"] for c in insp.get_columns("doctors")]
-        if "city" not in doctor_cols:
-            conn.execute(sa_text("ALTER TABLE doctors ADD COLUMN city VARCHAR(100)"))
-            conn.commit()
-        if "commune" not in doctor_cols:
-            conn.execute(sa_text("ALTER TABLE doctors ADD COLUMN commune VARCHAR(100)"))
-            conn.commit()
-except Exception as e:
-    print(f"Migration warning: {e}")
 
 app = FastAPI(title="Visitadores Médicos API", version="1.0.0")
 
@@ -45,8 +30,6 @@ app.include_router(sales.router)
 app.include_router(cardex.router)
 app.include_router(dashboard.router)
 app.include_router(ai_agent.router)
-app.include_router(knowledge.router)
-app.include_router(images.router)
 
 
 def seed_business_lines(db: Session):
@@ -81,10 +64,7 @@ def root():
 
 @app.get("/health")
 def health():
-    import os
-    db_url = os.getenv("DATABASE_URL", "NOT SET")
-    db_type = "postgresql" if "postgres" in db_url else "sqlite" if "sqlite" in db_url else "unknown"
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat(), "db_type": db_type, "db_url_prefix": db_url[:30] + "..." if len(db_url) > 30 else db_url}
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
 
 @app.post("/api/seed")
@@ -192,18 +172,3 @@ def seed_sample_data(db: Session = Depends(get_db)):
         "doctors_created": len([d for d in doctors if d.id]),
         "visits_created": visits_created
     }
-
-
-@app.post("/api/reset-all")
-def reset_all_data(db: Session = Depends(get_db)):
-    """Delete all data except business lines."""
-    from .models import Visit, Sale, SalesUpload, CardexUpload, Doctor, MedicalRep, KnowledgeBase
-    db.query(Visit).delete()
-    db.query(Sale).delete()
-    db.query(SalesUpload).delete()
-    db.query(CardexUpload).delete()
-    db.query(Doctor).delete()
-    db.query(MedicalRep).delete()
-    db.query(KnowledgeBase).delete()
-    db.commit()
-    return {"message": "Todos los datos han sido eliminados (excepto líneas de negocio)"}

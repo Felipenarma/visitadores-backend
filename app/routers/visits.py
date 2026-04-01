@@ -83,6 +83,17 @@ def update_visit(visit_id: int, data: VisitUpdate, db: Session = Depends(get_db)
     return enrich_visit(visit)
 
 
+@router.delete("/clear-scheduled")
+def clear_scheduled_visits(rep_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
+    """Delete all scheduled visits. Optionally filter by rep_id."""
+    query = db.query(Visit).filter(Visit.status == "scheduled")
+    if rep_id is not None:
+        query = query.filter(Visit.rep_id == rep_id)
+    count = query.delete(synchronize_session=False)
+    db.commit()
+    return {"message": f"{count} visitas agendadas eliminadas", "deleted": count}
+
+
 @router.delete("/{visit_id}")
 def delete_visit(visit_id: int, db: Session = Depends(get_db)):
     visit = db.query(Visit).filter(Visit.id == visit_id).first()
@@ -93,123 +104,61 @@ def delete_visit(visit_id: int, db: Session = Depends(get_db)):
     return {"message": "Visita eliminada"}
 
 
-@router.delete("/clear-scheduled")
-def clear_scheduled_visits(rep_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
-    """Delete all scheduled visits (not completed/missed). Optionally filter by rep_id."""
-    query = db.query(Visit).filter(Visit.status == "scheduled")
-    if rep_id is not None:
-        query = query.filter(Visit.rep_id == rep_id)
-    count = query.delete(synchronize_session=False)
-    db.commit()
-    return {"message": f"{count} visitas agendadas eliminadas", "deleted": count}
-
-
 @router.post("/generate")
 def generate_visits(data: GenerateVisitsRequest, db: Session = Depends(get_db)):
-    """
-    Generate visits distributed across weekdays.
-    - All doctors are spread evenly across weekdays (7 per day, Mon-Fri)
-    - Each cycle covers all doctors, then repeats based on frequency
-    - No doctor appears twice on the same day
-    """
     months_ahead = data.months_ahead or 6
-    MAX_PER_DAY = 7
-    if data.start_date:
-        start_date = datetime.fromisoformat(data.start_date)
-    else:
-        start_date = datetime.utcnow()
-    end_date = start_date + timedelta(days=30 * months_ahead)
+    end_date = datetime.utcnow() + timedelta(days=30 * months_ahead)
+    start_date = datetime.utcnow()
 
     query = db.query(Doctor).filter(Doctor.is_active == True, Doctor.rep_id != None)
     if data.rep_id:
         query = query.filter(Doctor.rep_id == data.rep_id)
 
     doctors = query.all()
-
-    if not doctors:
-        return {"message": "No hay doctores con visitador asignado", "created": 0, "skipped": 0}
-
-    from collections import defaultdict
-
-    # Group doctors by rep
-    rep_doctors = defaultdict(list)
-    for doc in doctors:
-        rep_doctors[doc.rep_id].append(doc)
-
     total_created = 0
+    skipped = 0
 
-    for rep_id, rep_docs in rep_doctors.items():
-        # Build list of available weekdays in the period
-        weekdays = []
-        d = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        while d <= end_date:
-            if d.weekday() < 5:  # Mon-Fri
-                weekdays.append(d)
-            d += timedelta(days=1)
-
-        if not weekdays:
+    for doctor in doctors:
+        if not doctor.visit_frequency or doctor.visit_frequency <= 0:
             continue
 
-        # Sort doctors by zone (notes field) so same-zone doctors are grouped together
-        # This ensures each day's visits are geographically clustered
-        rep_docs_sorted = sorted(rep_docs, key=lambda doc: (doc.notes or 'ZZZ_sin_zona'))
+        # Find last scheduled or completed visit
+        last_visit = db.query(Visit).filter(
+            Visit.doctor_id == doctor.id,
+            Visit.scheduled_date >= start_date
+        ).order_by(Visit.scheduled_date.desc()).first()
 
-        # Group doctors by frequency
-        freq_groups = defaultdict(list)
-        for doc in rep_docs_sorted:
-            freq = doc.visit_frequency if doc.visit_frequency and doc.visit_frequency > 0 else 30
-            freq_groups[freq].append(doc)
+        if last_visit:
+            # Start from after the last scheduled visit
+            next_date = last_visit.scheduled_date + timedelta(days=doctor.visit_frequency)
+        else:
+            next_date = start_date
 
-        day_counts = defaultdict(int)  # date -> count of visits
-        doc_on_day = defaultdict(set)  # date -> set of doctor_ids
+        while next_date <= end_date:
+            # Check if visit already exists on this date (within 1 day)
+            existing = db.query(Visit).filter(
+                Visit.doctor_id == doctor.id,
+                Visit.scheduled_date >= next_date - timedelta(hours=12),
+                Visit.scheduled_date <= next_date + timedelta(hours=12)
+            ).first()
 
-        for freq, docs_in_group in freq_groups.items():
-            # Calculate how many cycles fit in the period
-            total_days = (end_date - start_date).days
-            num_cycles = max(1, total_days // freq)
+            if not existing:
+                visit = Visit(
+                    doctor_id=doctor.id,
+                    rep_id=doctor.rep_id,
+                    scheduled_date=next_date,
+                    status="scheduled"
+                )
+                db.add(visit)
+                total_created += 1
+            else:
+                skipped += 1
 
-            for cycle in range(num_cycles):
-                # Start date of this cycle
-                cycle_start_day = start_date + timedelta(days=cycle * freq)
-                if cycle_start_day > end_date:
-                    break
-
-                # Get weekdays available from cycle_start
-                cycle_weekdays = [wd for wd in weekdays if wd >= cycle_start_day.replace(hour=0, minute=0, second=0, microsecond=0)]
-
-                # Distribute doctors grouped by zone across weekdays
-                # Same-zone doctors fill a day before moving to next zone/day
-                doc_idx = 0
-                for wd in cycle_weekdays:
-                    if doc_idx >= len(docs_in_group):
-                        break  # All doctors in this cycle scheduled
-
-                    while doc_idx < len(docs_in_group) and day_counts[wd] < MAX_PER_DAY:
-                        doc = docs_in_group[doc_idx]
-
-                        # Skip if this doctor already has a visit on this day
-                        if doc.id in doc_on_day[wd]:
-                            doc_idx += 1
-                            continue
-
-                        slot_num = day_counts[wd]
-                        hour = 8 + slot_num  # 8:00, 9:00, 10:00...
-                        visit_time = wd.replace(hour=hour)
-
-                        visit = Visit(
-                            doctor_id=doc.id,
-                            rep_id=rep_id,
-                            scheduled_date=visit_time,
-                            status="scheduled"
-                        )
-                        db.add(visit)
-                        day_counts[wd] += 1
-                        doc_on_day[wd].add(doc.id)
-                        total_created += 1
-                        doc_idx += 1
+            next_date += timedelta(days=doctor.visit_frequency)
 
     db.commit()
     return {
-        "message": f"Generación completada: {total_created} visitas creadas. Distribuidas máx {MAX_PER_DAY}/día (Lun-Vie).",
+        "message": f"Generación completada: {total_created} visitas creadas, {skipped} ya existentes",
         "created": total_created,
+        "skipped": skipped
     }

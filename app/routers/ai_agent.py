@@ -4,11 +4,9 @@ from datetime import datetime, timedelta
 from typing import Any
 import os
 import json
-import httpx
-from dotenv import load_dotenv
-load_dotenv()
+import anthropic
 from ..database import get_db
-from ..models import Visit, Doctor, MedicalRep, KnowledgeBase, UploadedImage
+from ..models import Visit, Doctor, MedicalRep
 from ..schemas import AgentChatRequest, AgentChatResponse, AgentMessage
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -250,17 +248,9 @@ def execute_tool(tool_name: str, tool_input: dict, rep_id: int, db: Session) -> 
     return {"error": f"Herramienta desconocida: {tool_name}"}
 
 
-@router.get("/check")
-def check_api_key():
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if key:
-        return {"status": "ok", "key_preview": key[:12] + "..."}
-    all_keys = sorted(os.environ.keys())
-    return {"status": "missing", "total_env_vars": len(all_keys), "all_keys": all_keys}
-
 @router.post("/chat", response_model=AgentChatResponse)
 def chat(request: AgentChatRequest, db: Session = Depends(get_db)):
-    api_key = (os.environ.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY no configurada")
 
@@ -268,109 +258,80 @@ def chat(request: AgentChatRequest, db: Session = Depends(get_db)):
     if not rep:
         raise HTTPException(status_code=404, detail="Visitador no encontrado")
 
-    try:
-        messages = []
-        for msg in request.conversation_history:
-            messages.append({"role": msg.role, "content": msg.content})
+    client = anthropic.Anthropic(api_key=api_key)
 
-        messages.append({"role": "user", "content": request.message})
+    messages = []
+    for msg in request.conversation_history:
+        messages.append({"role": msg.role, "content": msg.content})
 
-        # Load knowledge base
-        kb_entries = db.query(KnowledgeBase).filter(KnowledgeBase.is_active == True).all()
-        kb_text = ""
-        if kb_entries:
-            kb_text = "\n\n--- BASE DE CONOCIMIENTO ---\nUsa esta información para responder preguntas sobre productos, protocolos y procedimientos:\n\n"
-            for entry in kb_entries:
-                bl_name = entry.business_line.name if entry.business_line else "General"
-                kb_text += f"[{entry.category.upper()} - {bl_name}] {entry.title}:\n{entry.content}\n\n"
+    messages.append({"role": "user", "content": request.message})
 
-        # Load available images (QR codes, etc)
-        available_images = db.query(UploadedImage).filter(UploadedImage.is_active == True).all()
-        images_text = ""
-        if available_images:
-            images_text = "\n\n--- IMAGENES DISPONIBLES (QR, productos, etc) ---\nCuando el visitador pida un QR o imagen, responde con el link completo para que pueda verla o compartirla:\n\n"
-            base_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "web-production-496eb.up.railway.app")
-            for img in available_images:
-                bl_name = img.business_line.name if img.business_line else "General"
-                img_url = f"https://{base_url}/api/images/{img.id}/file"
-                images_text += f"- [{img.category.upper()}] {img.name}: {img.description or ''} -> URL: {img_url}\n"
+    system_with_context = f"{SYSTEM_PROMPT}\n\nContexto actual:\n- Visitador: {rep.name}\n- ID: {rep.id}\n- Fecha actual: {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}"
 
-        system_with_context = f"{SYSTEM_PROMPT}\n\nContexto actual:\n- Visitador: {rep.name}\n- ID: {rep.id}\n- Fecha actual: {datetime.utcnow().strftime('%d/%m/%Y %H:%M')}{kb_text}{images_text}"
+    # Tool-calling loop
+    final_response = ""
+    max_iterations = 5
+    iteration = 0
 
-        # Tool-calling loop
-        final_response = ""
-        max_iterations = 5
-        iteration = 0
+    while iteration < max_iterations:
+        iteration += 1
+        response = client.messages.create(
+            model="claude-sonnet-4-5-20241022",
+            max_tokens=2048,
+            system=system_with_context,
+            tools=TOOLS,
+            messages=messages
+        )
 
-        while iteration < max_iterations:
-            iteration += 1
+        # Check stop reason
+        if response.stop_reason == "end_turn":
+            # Extract text response
+            for block in response.content:
+                if hasattr(block, "text"):
+                    final_response = block.text
+            break
 
-            # Direct HTTP call to Anthropic API
-            with httpx.Client(timeout=60.0) as http_client:
-                api_response = http_client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "Content-Type": "application/json",
-                        "x-api-key": api_key,
-                        "anthropic-version": "2023-06-01",
-                    },
-                    json={
-                        "model": "claude-haiku-4-5-20251001",
-                        "max_tokens": 2048,
-                        "system": system_with_context,
-                        "tools": TOOLS,
-                        "messages": messages,
-                    }
-                )
+        elif response.stop_reason == "tool_use":
+            # Process tool calls
+            tool_results = []
+            assistant_content = response.content
 
-            if api_response.status_code != 200:
-                raise Exception(f"Anthropic API error {api_response.status_code}: {api_response.text}")
+            for block in response.content:
+                if block.type == "tool_use":
+                    tool_result = execute_tool(block.name, block.input, request.rep_id, db)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(tool_result, ensure_ascii=False, default=str)
+                    })
 
-            response_data = api_response.json()
-            stop_reason = response_data.get("stop_reason", "")
-            content = response_data.get("content", [])
+            # Add assistant message with tool use
+            messages.append({
+                "role": "assistant",
+                "content": [
+                    {"type": b.type, **({
+                        "text": b.text
+                    } if b.type == "text" else {
+                        "id": b.id,
+                        "name": b.name,
+                        "input": b.input
+                    })}
+                    for b in assistant_content
+                ]
+            })
 
-            # Check stop reason
-            if stop_reason == "end_turn":
-                for block in content:
-                    if block.get("type") == "text":
-                        final_response = block.get("text", "")
-                break
+            # Add tool results
+            messages.append({
+                "role": "user",
+                "content": tool_results
+            })
+        else:
+            # Unexpected stop reason
+            final_response = "Lo siento, ocurrió un error inesperado."
+            break
 
-            elif stop_reason == "tool_use":
-                tool_results = []
-
-                for block in content:
-                    if block.get("type") == "tool_use":
-                        tool_result = execute_tool(block["name"], block["input"], request.rep_id, db)
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block["id"],
-                            "content": json.dumps(tool_result, ensure_ascii=False, default=str)
-                        })
-
-                # Add assistant message with tool use
-                messages.append({
-                    "role": "assistant",
-                    "content": content
-                })
-
-                # Add tool results
-                messages.append({
-                    "role": "user",
-                    "content": tool_results
-                })
-            else:
-                final_response = "Lo siento, ocurrió un error inesperado."
-                break
-
-        if not final_response:
-            final_response = "Lo siento, no pude procesar tu solicitud."
-
-    except Exception as e:
-        import traceback
-        print(f"ERROR in agent chat: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Error del agente: {str(e)}")
+    if not final_response:
+        final_response = "Lo siento, no pude procesar tu solicitud."
 
     # Build updated conversation history
     updated_history = list(request.conversation_history)

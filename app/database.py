@@ -6,13 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_raw_url = os.getenv("DATABASE_URL", "sqlite:///./visitadores.db")
-
-# Railway provides postgresql:// URLs, but SQLAlchemy requires postgresql+psycopg2://
-if _raw_url.startswith("postgresql://"):
-    DATABASE_URL = _raw_url.replace("postgresql://", "postgresql+psycopg2://", 1)
-else:
-    DATABASE_URL = _raw_url
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./visitadores.db")
 
 engine = create_engine(
     DATABASE_URL,

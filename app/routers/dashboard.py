@@ -67,37 +67,17 @@ def get_today_visits(db: Session = Depends(get_db)):
 
 
 @router.get("/visits-by-rep")
-def get_visits_by_rep(month: int = None, year: int = None, db: Session = Depends(get_db)):
-    now = datetime.utcnow()
-    m = month or now.month
-    y = year or now.year
-    month_start = datetime(y, m, 1)
-    if m == 12:
-        month_end = datetime(y + 1, 1, 1)
-    else:
-        month_end = datetime(y, m + 1, 1)
-
+def get_visits_by_rep(db: Session = Depends(get_db)):
     reps = db.query(MedicalRep).filter(MedicalRep.is_active == True).all()
     result = []
+    month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     for rep in reps:
-        completed = db.query(func.count(Visit.id)).filter(
+        count = db.query(func.count(Visit.id)).filter(
             Visit.rep_id == rep.id,
-            Visit.scheduled_date >= month_start,
-            Visit.scheduled_date < month_end,
-            Visit.status == "completed"
+            Visit.scheduled_date >= month_start
         ).scalar()
-        total = db.query(func.count(Visit.id)).filter(
-            Visit.rep_id == rep.id,
-            Visit.scheduled_date >= month_start,
-            Visit.scheduled_date < month_end
-        ).scalar()
-        result.append({
-            "rep_name": rep.name,
-            "completed": completed,
-            "total": total,
-            "rep_id": rep.id
-        })
+        result.append({"rep_name": rep.name, "visits": count, "rep_id": rep.id})
     return result
 
 
