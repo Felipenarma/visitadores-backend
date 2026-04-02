@@ -58,7 +58,11 @@ class MedicalRepOut(MedicalRepBase):
 # Doctor schemas
 class DoctorBase(BaseModel):
     name: str
+    rut: Optional[str] = None
+    medical_center: Optional[str] = None
     specialty: Optional[str] = None
+    city: Optional[str] = None
+    commune: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
@@ -130,6 +134,7 @@ class VisitOut(VisitBase):
 class GenerateVisitsRequest(BaseModel):
     rep_id: Optional[int] = None
     months_ahead: Optional[int] = 6
+    start_date: Optional[str] = None  # ISO format: "2026-04-06"
 
 
 # Sales schemas
@@ -137,7 +142,10 @@ class SaleOut(BaseModel):
     id: int
     doctor_id: Optional[int] = None
     doctor_name_raw: Optional[str] = None
+    doctor_rut_raw: Optional[str] = None
     product: Optional[str] = None
+    category: Optional[str] = None
+    quantity: Optional[int] = 1
     amount: Optional[float] = None
     sale_date: Optional[datetime] = None
     upload_id: Optional[int] = None
@@ -151,6 +159,8 @@ class SaleOut(BaseModel):
 class SalesSummaryItem(BaseModel):
     doctor_id: Optional[int] = None
     doctor_name: str
+    doctor_rut: Optional[str] = None
+    total_units: int
     total_sales: float
     sales_count: int
     visits_count: int
@@ -193,3 +203,35 @@ class AgentChatRequest(BaseModel):
 class AgentChatResponse(BaseModel):
     response: str
     conversation_history: List[AgentMessage]
+
+
+# Knowledge Base schemas
+class KnowledgeBaseCreate(BaseModel):
+    title: str
+    category: str
+    content: str
+    business_line_id: Optional[int] = None
+    is_active: Optional[bool] = True
+
+
+class KnowledgeBaseUpdate(BaseModel):
+    title: Optional[str] = None
+    category: Optional[str] = None
+    content: Optional[str] = None
+    business_line_id: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class KnowledgeBaseOut(BaseModel):
+    id: int
+    title: str
+    category: str
+    content: str
+    business_line_id: Optional[int] = None
+    business_line_name: Optional[str] = None
+    is_active: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
